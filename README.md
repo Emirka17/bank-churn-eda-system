@@ -48,7 +48,8 @@ graph TD
 
 Это технический аналог BPMN, который пошагово описывает жизнь одного конкретного запроса во времени. Именно по этой схеме мы будем писать логику.
 
-```sequenceDiagram
+```mermaid
+sequenceDiagram
     autonumber
     actor Client as Bank System (Simulator)
     participant API as FastAPI Gateway
@@ -89,3 +90,4 @@ graph TD
         Kafka-->>Sink: Чтение батча скорринга
         Sink->>PG: INSERT ON CONFLICT UPDATE (client_id, churn_prob, updated_at)
     end
+```
