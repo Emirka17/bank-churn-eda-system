@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Data and Models
+data/
+*.csv
+*.cbm
+*.pkl
+
+# IDEs
+.vscode/
+.idea/
+
+# Mac
+.DS_Store
