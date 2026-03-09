@@ -42,3 +42,49 @@ graph TD
     Kafka -- "8. Consume scored-events" --> Sink
     Sink -- "9. Upsert State" --> PG_Data
     Streamlit -- "10. Read Data" --> PG_Data
+
+## 🏗 Диаграмма процесса 
+
+Это технический аналог BPMN, который пошагово описывает жизнь одного конкретного запроса во времени. Именно по этой схеме мы будем писать логику.
+
+```sequenceDiagram
+    autonumber
+    actor Client as Bank System (Simulator)
+    participant API as FastAPI Gateway
+    participant Redis as Redis Cache
+    participant Kafka as Kafka Broker
+    participant ML as ML Worker
+    participant Mongo as MongoDB
+    participant PG as PostgreSQL
+
+    Client->>API: POST /api/v1/scoring (client_id: 123, ...)
+    
+    rect rgb(240, 240, 240)
+        Note over API, Redis: Фаза валидации и дедупликации
+        API->>Redis: SETNX lock:event_123 
+        alt Если ключ уже есть (Дубль)
+            Redis-->>API: False
+            API-->>Client: 409 Conflict (Duplicate)
+        else Если новый запрос
+            Redis-->>API: True
+            API->>Kafka: Произвести в топик [raw-client-events]
+            API-->>Client: 202 Accepted (In queue)
+        end
+    end
+
+    rect rgb(230, 245, 255)
+        Note over Kafka, Mongo: Фаза ML Инференса (Асинхронно)
+        Kafka-->>ML: Чтение батча (poll)
+        ML->>PG: SELECT * FROM models WHERE status='active' (Кэшируется локально)
+        PG-->>ML: model_v2.cbm
+        ML->>ML: Выполнение CatBoost (predict_proba)
+        ML->>Mongo: Вставить аудит-лог (сырой JSON, фичи, время, prediction score)
+        ML->>Kafka: Произвести в топик [scored-client-events]
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Kafka, PG: Фаза сохранения статуса (Sink)
+        participant Sink as Sink Worker
+        Kafka-->>Sink: Чтение батча скорринга
+        Sink->>PG: INSERT ON CONFLICT UPDATE (client_id, churn_prob, updated_at)
+    end
