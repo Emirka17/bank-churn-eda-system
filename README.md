@@ -42,6 +42,7 @@ graph TD
     Kafka -- "8. Consume scored-events" --> Sink
     Sink -- "9. Upsert State" --> PG_Data
     Streamlit -- "10. Read Data" --> PG_Data
+```
 
 ## 🏗 Диаграмма процесса 
 
