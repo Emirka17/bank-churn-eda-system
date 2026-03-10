@@ -11,6 +11,7 @@ import os
 import numpy as np
 import pandas as pd
 import traceback
+from pathlib import Path
 from catboost import CatBoostClassifier
 
 from src.shared.config import settings
@@ -51,18 +52,24 @@ class ChurnPredictor:
 
     def __init__(self):
         self.model: CatBoostClassifier | None = None
-        self._model_path = settings.MODEL_PATH
+        self._model_path = Path(settings.MODEL_PATH.replace("\\", "/"))
 
     def load(self) -> None:
         """
         Загружает модель с диска. Вызывается один раз при старте воркера.
         Бросает исключение если файл не найден — это намеренно (fail fast).
         """
-        if not os.path.exists(self._model_path):
+        if not self._model_path.exists():
             raise FileNotFoundError(
-                f"❌ Файл модели не найден: {self._model_path}\n"
+                f"❌ Файл модели не найден: {self._model_path.absolute()}\n"
+                f"   Текущая директория: {Path.cwd()}\n"
                 f"   Запусти: python notebooks/train_model.py"
-            )
+        )
+        # if not os.path.exists(self._model_path):
+        #     raise FileNotFoundError(
+        #         f"❌ Файл модели не найден: {self._model_path}\n"
+        #         f"   Запусти: python notebooks/train_model.py"
+        #     )
 
         self.model = CatBoostClassifier()
         self.model.load_model(self._model_path)

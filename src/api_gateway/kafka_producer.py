@@ -1,27 +1,32 @@
 import json
+import asyncio
 from aiokafka import AIOKafkaProducer
 from src.shared.config import settings
 
-# Глобальная переменная для хранения запущенного продюсера
 producer: AIOKafkaProducer = None
 
-async def start_producer():
-    """Эта функция запустится вместе со стартом нашего API"""
+async def start_producer(retries: int = 10, delay: float = 2.0):
     global producer
     producer = AIOKafkaProducer(
         bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
-        # Kafka принимает только байты, поэтому мы сериализуем словари в JSON, а затем кодируем в UTF-8
         value_serializer=lambda v: json.dumps(v).encode("utf-8")
     )
-    await producer.start()
-    print("✅ Kafka Producer успешно подключен к брокеру!")
+    for attempt in range(1, retries + 1):
+        try:
+            await producer.start()
+            print("✅ Kafka Producer подключен!")
+            return
+        except Exception as e:
+            wait = delay * (2 ** (attempt - 1))  # 2s, 4s, 8s...
+            print(f"⚠️  Попытка {attempt}/{retries} — Kafka недоступна: {e}. Ждём {wait:.0f}s...")
+            if attempt == retries:
+                raise RuntimeError(f"Kafka недоступна после {retries} попыток") from e
+            await asyncio.sleep(wait)
 
 async def stop_producer():
-    """Эта функция корректно отключит нас от Kafka при остановке сервера"""
     if producer:
         await producer.stop()
         print("🛑 Kafka Producer остановлен.")
 
 async def get_producer() -> AIOKafkaProducer:
-    """Функция, которая будет отдавать продюсера нашим эндпоинтам"""
     return producer

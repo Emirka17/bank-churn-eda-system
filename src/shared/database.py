@@ -10,3 +10,7 @@ async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 # Базовый класс для всех наших будущих таблиц
 Base = declarative_base()
+
+async def get_session():
+    async with async_session() as session:
+        yield session

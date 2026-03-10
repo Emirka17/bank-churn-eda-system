@@ -37,10 +37,18 @@ async def consume():
         value_serializer=lambda v: json.dumps(v).encode("utf-8")
     )
 
-    await consumer.start()
-    await producer.start()
-    print(f"🎧 Consumer запущен! Слушаем топик: {settings.KAFKA_TOPIC_RAW}")
-    print(f"📤 Producer готов. Топик результатов: {settings.KAFKA_TOPIC_SCORED}")
+    for attempt in range(1, 11):
+        try:
+            await consumer.start()
+            await producer.start()
+            print(f"🎧 ml_worker подключён к Kafka")
+            break
+        except Exception as e:
+            wait = 2 * (2 ** (attempt - 1))
+            print(f"⚠️  Попытка {attempt}/10 — {e}. Ждём {wait:.0f}s...")
+            if attempt == 10:
+                raise
+            await asyncio.sleep(wait)
 
     try:
         async for msg in consumer:
