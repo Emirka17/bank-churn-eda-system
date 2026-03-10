@@ -4,7 +4,7 @@ from fastapi import FastAPI, Depends
 from aiokafka import AIOKafkaProducer
 
 from app.core.config import settings
-from app.models.schemas import TransactionEvent
+from app.models.schemas import ClientChurnEvent
 from app.kafka_producer import start_producer, stop_producer, get_producer
 
 # Lifespan - это новый механизм FastAPI для управления запуском/остановкой базы и брокеров
@@ -23,7 +23,7 @@ async def health_check():
     return {"status": "ok", "message": "Bank Churn API is running!"}
 
 @app.post("/events/")
-async def receive_event(event: TransactionEvent, kafka: AIOKafkaProducer = Depends(get_producer)):
+async def receive_event(event: ClientChurnEvent, kafka: AIOKafkaProducer = Depends(get_producer)):
     """
     Принимаем транзакцию, валидируем и отправляем в очередь Kafka
     """
