@@ -1,6 +1,6 @@
 import json
 from aiokafka import AIOKafkaProducer
-from app.core.config import settings
+from src.shared.config import settings
 
 # Глобальная переменная для хранения запущенного продюсера
 producer: AIOKafkaProducer = None

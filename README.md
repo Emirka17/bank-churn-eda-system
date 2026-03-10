@@ -91,3 +91,87 @@ sequenceDiagram
         Sink->>PG: INSERT ON CONFLICT UPDATE (client_id, churn_prob, updated_at)
     end
 ```
+
+## 🏗  Инфра
+```mermaid
+flowchart TD
+    %% ── Клиент ──────────────────────────────────────────
+    CLIENT(["👤 Клиент"])
+
+    %% ── API Gateway ──────────────────────────────────────
+    subgraph GW["🌐 API Gateway (FastAPI)"]
+        VALIDATE["✅ Валидация\nPydantic"]
+        PRODUCE["📤 Kafka Producer"]
+        GET_RESULT["🔍 GET /result/user_id"]
+    end
+
+    %% ── Kafka ────────────────────────────────────────────
+    subgraph KAFKA["📨 Kafka Broker"]
+        RAW[("📥 churn-raw-events")]
+        SCORED[("📤 churn-scored-events")]
+    end
+
+    %% ── ML Worker ────────────────────────────────────────
+    subgraph WORKER["⚙️ ML Worker"]
+        CONSUME["🎧 Consumer\nчитает сообщение"]
+        PREDICT["🧠 CatBoost\nchurn_probability"]
+        SAVE_PG["💾 Сохранить\nв PostgreSQL"]
+        PUBLISH["🚀 Публикует\nрезультат"]
+    end
+
+    %% ── Хранилища ────────────────────────────────────────
+    subgraph DB["🗄️ PostgreSQL"]
+        LOGS[("📋 client_churn_logs")]
+        TXN[("💳 transactions")]
+    end
+
+    subgraph FUTURE["🔮 В разработке"]
+        SINK["sink_worker\n⬜ пустой"]
+        MONGO[("🍃 MongoDB\nсырые логи")]
+        SIM["simulator\n⬜ пустой"]
+        DASH["streamlit_app\n⬜ пустой"]
+    end
+
+    %% ── Поток данных ─────────────────────────────────────
+    CLIENT -->|"POST /predict"| VALIDATE
+    VALIDATE -->|"данные валидны"| PRODUCE
+    VALIDATE -->|"422 ошибка"| CLIENT
+    PRODUCE -->|"пишет событие"| RAW
+    PRODUCE -->|"accepted"| CLIENT
+
+    RAW -->|"polling"| CONSUME
+    CONSUME --> PREDICT
+    PREDICT --> SAVE_PG
+    SAVE_PG --> LOGS
+    PREDICT --> PUBLISH
+    PUBLISH --> SCORED
+
+    SCORED -->|"читает"| SINK
+    SINK --> MONGO
+    SIM -->|"генерирует\nтестовых клиентов"| VALIDATE
+    DASH -->|"читает аналитику"| LOGS
+    DASH -->|"читает сырые логи"| MONGO
+
+    CLIENT -->|"GET /result/user_id"| GET_RESULT
+    GET_RESULT -->|"SELECT WHERE user_id"| LOGS
+    LOGS -->|"churn_probability"| GET_RESULT
+    GET_RESULT -->|"JSON ответ"| CLIENT
+
+    %% ── Стили ────────────────────────────────────────────
+    style CLIENT fill:#4A90D9,color:#fff
+    style VALIDATE fill:#27AE60,color:#fff
+    style PRODUCE fill:#27AE60,color:#fff
+    style GET_RESULT fill:#27AE60,color:#fff
+    style RAW fill:#E67E22,color:#fff
+    style SCORED fill:#E67E22,color:#fff
+    style CONSUME fill:#8E44AD,color:#fff
+    style PREDICT fill:#8E44AD,color:#fff
+    style SAVE_PG fill:#8E44AD,color:#fff
+    style PUBLISH fill:#8E44AD,color:#fff
+    style LOGS fill:#2ECC71,color:#fff
+    style TXN fill:#2ECC71,color:#fff
+    style SINK fill:#95A5A6,color:#fff
+    style MONGO fill:#95A5A6,color:#fff
+    style SIM fill:#95A5A6,color:#fff
+    style DASH fill:#95A5A6,color:#fffs
+```

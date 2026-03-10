@@ -17,3 +17,9 @@ data/
 
 # Mac
 .DS_Store
+
+
+# ML модели (большие бинарные файлы)
+models/*.cbm
+models/*.pkl
+models/*.bin

@@ -3,12 +3,11 @@ import json
 from datetime import datetime
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 
-from app.core.config import settings
-from app.db.database import engine, Base, async_session
-# ВАЖНО: Мы изменили импорт модели на новую таблицу
-from app.db.models import ClientChurnLog 
-# Импортируем нашу новую заглушку для ML-модели
-from app.ml.predictor import predictor 
+from src.shared.config import settings
+from src.shared.database import engine, Base, async_session
+from src.shared.models import ClientChurnLog
+from src.ml_worker.predictor import predictor
+
 
 async def init_db():
     """Создает таблицы в базе данных, если их еще нет"""
@@ -16,77 +15,100 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
     print("✅ База данных инициализирована.")
 
+
 async def consume():
-    """Главный процесс слушателя: читает из Kafka, пишет в PostgreSQL и отправляет результат дальше"""
+    """Главный процесс: читает из Kafka, считает ML скор, пишет в БД и Kafka"""
+    
     await init_db()
 
-    # 1. Настраиваем слушателя (Consumer)
+    # ── НОВОЕ: загружаем модель ДО старта консьюмера ──────────────
+    predictor.load()  # fail fast — если модели нет, падаем сразу
+    # ──────────────────────────────────────────────────────────────
+
     consumer = AIOKafkaConsumer(
         settings.KAFKA_TOPIC_RAW,
         bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
-        group_id="churn_prediction_group", 
-        value_deserializer=lambda x: json.loads(x.decode("utf-8")) 
+        group_id="churn_prediction_group",
+        value_deserializer=lambda x: json.loads(x.decode("utf-8"))
     )
 
-    # 2. НОВОЕ: Настраиваем отправителя (Producer)
     producer = AIOKafkaProducer(
         bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
         value_serializer=lambda v: json.dumps(v).encode("utf-8")
     )
 
     await consumer.start()
-    await producer.start() # Запускаем продюсер
-    print(f"🎧 Consumer запущен! Слушаем топик: {settings.KAFKA_TOPIC_RAW}...")
-    print(f"📤 Producer готов к отправке в топик: scored-events")
+    await producer.start()
+    print(f"🎧 Consumer запущен! Слушаем топик: {settings.KAFKA_TOPIC_RAW}")
+    print(f"📤 Producer готов. Топик результатов: {settings.KAFKA_TOPIC_SCORED}")
 
     try:
         async for msg in consumer:
             data = msg.value
-            print(f"📥 Получено сообщение из Kafka: {data['user_id']}")
-            
-            # НОВОЕ: Вызываем заглушку ML-модели 
-            churn_probability = predictor.predict(data) 
-            
-            # Сохраняем в PostgreSQL (теперь с новыми полями Датасета)
-            async with async_session() as session:
-                new_log = ClientChurnLog(
-                    user_id=data["user_id"],
-                    credit_score=data["credit_score"],
-                    geography=data["geography"],
-                    gender=data["gender"],
-                    age=data["age"],
-                    tenure=data["tenure"],
-                    balance=data["balance"],
-                    num_of_products=data["num_of_products"],
-                    has_cr_card=data["has_cr_card"],
-                    is_active_member=data["is_active_member"],
-                    estimated_salary=data["estimated_salary"],
-                    complain=data["complain"],
-                    satisfaction_score=data["satisfaction_score"],
-                    subscription_type=data["subscription_type"],
-                    points_earned=data["points_earned"],
-                    timestamp=datetime.fromisoformat(data["timestamp"]).replace(tzinfo=None),
-                    churn_probability=churn_probability
+            user_id = data["user_id"]
+            print(f"\n📥 Получено сообщение: user_id={user_id}")
+
+            try:
+                # ── ML инференс ───────────────────────────────────────────
+                churn_probability = predictor.predict(data)
+                print(f"🧠 CatBoost: churn_probability={churn_probability}")
+                # ─────────────────────────────────────────────────────────
+
+                # ── Сохраняем в PostgreSQL ────────────────────────────────
+                async with async_session() as session:
+                    new_log = ClientChurnLog(
+                        user_id=user_id,
+                        credit_score=data["credit_score"],
+                        geography=data["geography"],
+                        gender=data["gender"],
+                        age=data["age"],
+                        tenure=data["tenure"],
+                        balance=data["balance"],
+                        num_of_products=data["num_of_products"],
+                        has_cr_card=data["has_cr_card"],
+                        is_active_member=data["is_active_member"],
+                        estimated_salary=data["estimated_salary"],
+                        complain=data["complain"],
+                        satisfaction_score=data["satisfaction_score"],
+                        subscription_type=data["subscription_type"],
+                        points_earned=data["points_earned"],
+                        timestamp=datetime.fromisoformat(
+                            data["timestamp"]
+                        ).replace(tzinfo=None),
+                        churn_probability=churn_probability,
+                    )
+                    session.add(new_log)
+                    await session.commit()
+                print(f"💾 Сохранено в PostgreSQL")
+                # ─────────────────────────────────────────────────────────
+
+                # ── Публикуем результат в scored-events ───────────────────
+                scored_event = {
+                    "user_id": user_id,
+                    "churn_probability": churn_probability,
+                    "timestamp": data["timestamp"],
+                }
+                await producer.send_and_wait(
+                    settings.KAFKA_TOPIC_SCORED,
+                    value=scored_event
                 )
-                session.add(new_log)
-                await session.commit()
-                
-            print(f"💾 Данные пользователя {data['user_id']} сохранены в базу (Шанс оттока: {churn_probability})!")
-            
-            # НОВОЕ: Отправляем результат скоринга дальше в Kafka
-            scored_event = {
-                "user_id": data["user_id"],
-                "churn_probability": churn_probability,
-                "timestamp": data["timestamp"]
-            }
-            # Отправляем и ждем подтверждения от брокера Kafka
-            await producer.send_and_wait("scored-events", value=scored_event)
-            print(f"🚀 Результат улетел в топик 'scored-events': {scored_event}")
-            print("-" * 30)
-            
+                print(f"🚀 Результат отправлен в '{settings.KAFKA_TOPIC_SCORED}'")
+                # ─────────────────────────────────────────────────────────
+
+            except KeyError as e:
+                # Битое сообщение — отсутствует обязательное поле
+                print(f"⚠️  KeyError для user_id={user_id}: {e} — пропускаем")
+
+            except Exception as e:
+                # Любая другая ошибка (математика, БД и т.д.)
+                print(f"❌ Ошибка обработки user_id={user_id}: {e}")
+
+            print("-" * 50)
+
     finally:
         await consumer.stop()
-        await producer.stop() # Не забываем закрыть соединение продюсера
+        await producer.stop()
+
 
 if __name__ == "__main__":
     asyncio.run(consume())

@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime
-from app.db.database import Base
+from src.shared.database import Base
 
 class ClientChurnLog(Base):
     __tablename__ = "client_churn_logs"

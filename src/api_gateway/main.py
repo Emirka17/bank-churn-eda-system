@@ -3,9 +3,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends
 from aiokafka import AIOKafkaProducer
 
-from app.core.config import settings
-from app.models.schemas import ClientChurnEvent
-from app.kafka_producer import start_producer, stop_producer, get_producer
+from src.shared.config import settings
+from src.shared.schemas import ClientChurnEvent
+from src.api_gateway.kafka_producer import start_producer, stop_producer, get_producer
 
 # Lifespan - это новый механизм FastAPI для управления запуском/остановкой базы и брокеров
 @asynccontextmanager
@@ -41,4 +41,4 @@ async def receive_event(event: ClientChurnEvent, kafka: AIOKafkaProducer = Depen
     }
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.api_gateway.main:app", host="0.0.0.0", port=8000, reload=True)
