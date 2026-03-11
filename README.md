@@ -121,82 +121,214 @@ flowchart TD
     style DASH fill:#95A5A6,color:#fff
 ```
 
+---
 
-## 🏗 Архитектура системы (Не актуально)
+## 🔄 Поток данных
 
-Ниже представлена C4 (Component) диаграмма развертывания проекта:
+| Шаг | Компонент | Действие |
+|-----|-----------|----------|
+| 1 | **Клиент / Simulator** | `POST /events/` — отправляет данные клиента банка |
+| 2 | **API Gateway** | Валидация через Pydantic. При ошибке → `422` |
+| 3 | **Kafka Producer** | Публикует событие в `churn-raw-events`. Возвращает `accepted` |
+| 4 | **ML Worker** | Читает из `churn-raw-events` (`ml_worker_group`) |
+| 5 | **CatBoost** | Вычисляет `churn_probability` (0..1) |
+| 6 | **PostgreSQL** | `INSERT` результата в `client_churn_logs` |
+| 7 | **Kafka Producer** | Публикует результат в `scored-events` |
+| 8 | **Sink Worker** | Читает из `scored-events` (`sink_worker_group`) |
+| 9 | **Sink Worker** | UTF-8 → JSON → валидация полей. Битые → DLQ (`poison`) |
+| 10 | **MongoDB** | `prob ≥ 0.7` → коллекция `high_risk`. Иначе — пропуск |
+| 11 | **Клиент** | `GET /result/{user_id}` → получает `churn_probability` + 🔴🟡🟢 |
 
-```mermaid
-graph TD
-    %% Узлы (Сущности)
-    Sim[("⚙️ Simulator (Mock Bank App)")]
-    API["🌐 FastAPI (API Gateway)"]
-    Redis[("🗄️ Redis (Cache & Locks)")]
-    Kafka{"🔀 Apache Kafka (Broker)"}
-    ML_Worker["🧠 ML Worker (CatBoost)"]
-    Mongo[("🍃 MongoDB (Audit Logs)")]
-    PG_Meta[("🐘 Postgres (Model Catalog)")]
-    PG_Data[("🐘 Postgres (Business Data)")]
-    Sink["📥 Sink Worker (DB Loader)"]
-    Streamlit["📊 Streamlit (Dashboard)"]
+---
 
-    %% Связи
-    Sim -- "1. POST JSON" --> API
-    API -- "2. Check Dedupe" --> Redis
-    API -- "3. Publish Event" --> Kafka
-    Kafka -- "4. Consume raw-events" --> ML_Worker
-    ML_Worker -- "5. Get Model" --> PG_Meta
-    ML_Worker -- "6. Audit Log" --> Mongo
-    ML_Worker -- "7. Publish scored-events" --> Kafka
-    Kafka -- "8. Consume scored-events" --> Sink
-    Sink -- "9. Upsert State" --> PG_Data
-    Streamlit -- "10. Read Data" --> PG_Data
+## 📁 Структура проекта
+
+```
+src/
+├── api_gateway/                 # 🌐 HTTP точка входа
+│   ├── main.py                  # FastAPI: /events/, /result/{user_id}, /
+│   └── kafka_producer.py        # Синглтон AIOKafkaProducer (start/stop/get)
+│
+├── ml_worker/                   # ⚙️ Предсказание оттока
+│   ├── consumer.py              # Consumer: churn-raw-events → predict → scored-events
+│   └── predictor.py             # Загрузка CatBoost, возвращает churn_probability
+│
+├── sink_worker/                 # 🪣 Фильтрация и сохранение в MongoDB
+│   ├── consumer.py              # Consumer: scored-events → high_risk / poison DLQ
+│   └── mongo_client.py          # Синглтон MongoDB (connect/close, high_risk, poison)
+│
+├── simulator/                   # 🤖 Генератор тестовых данных
+│   └── main.py                  # Генерирует N клиентов → POST /events/ (httpx)
+│
+├── shared/                      # 🔧 Общий код для всех сервисов
+│   ├── config.py                # Settings (Pydantic BaseSettings) — читает .env
+│   ├── database.py              # Async SQLAlchemy engine + get_session() для DI
+│   ├── kafka_admin.py           # Создание топиков при старте, retry с backoff
+│   ├── models.py                # ORM-модель ClientChurnLog (PostgreSQL)
+│   ├── schemas.py               # Pydantic-схема ClientChurnEvent (валидация POST)
+│   └── __init__.py
+│
+└── streamlit_app/               # 🔮 Дашборд (в разработке)
 ```
 
-## 🏗 Диаграмма процесса (Не актуально)
+### Зависимости между модулями
 
-Это технический аналог BPMN, который пошагово описывает жизнь одного конкретного запроса во времени. Именно по этой схеме мы будем писать логику.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Client as Bank System (Simulator)
-    participant API as FastAPI Gateway
-    participant Redis as Redis Cache
-    participant Kafka as Kafka Broker
-    participant ML as ML Worker
-    participant Mongo as MongoDB
-    participant PG as PostgreSQL
-
-    Client->>API: POST /api/v1/scoring (client_id: 123, ...)
-    
-    rect rgb(240, 240, 240)
-        Note over API, Redis: Фаза валидации и дедупликации
-        API->>Redis: SETNX lock:event_123 
-        alt Если ключ уже есть (Дубль)
-            Redis-->>API: False
-            API-->>Client: 409 Conflict (Duplicate)
-        else Если новый запрос
-            Redis-->>API: True
-            API->>Kafka: Произвести в топик [raw-client-events]
-            API-->>Client: 202 Accepted (In queue)
-        end
-    end
-
-    rect rgb(230, 245, 255)
-        Note over Kafka, Mongo: Фаза ML Инференса (Асинхронно)
-        Kafka-->>ML: Чтение батча (poll)
-        ML->>PG: SELECT * FROM models WHERE status='active' (Кэшируется локально)
-        PG-->>ML: model_v2.cbm
-        ML->>ML: Выполнение CatBoost (predict_proba)
-        ML->>Mongo: Вставить аудит-лог (сырой JSON, фичи, время, prediction score)
-        ML->>Kafka: Произвести в топик [scored-client-events]
-    end
-
-    rect rgb(230, 255, 230)
-        Note over Kafka, PG: Фаза сохранения статуса (Sink)
-        participant Sink as Sink Worker
-        Kafka-->>Sink: Чтение батча скорринга
-        Sink->>PG: INSERT ON CONFLICT UPDATE (client_id, churn_prob, updated_at)
-    end
 ```
+simulator
+    └──► api_gateway          (HTTP POST /events/)
+
+api_gateway
+    ├──► shared.schemas       (валидация входящих данных)
+    ├──► shared.database      (чтение результатов GET /result)
+    ├──► shared.models        (ORM ClientChurnLog)
+    └──► kafka_producer       (отправка событий в Kafka)
+
+ml_worker
+    ├──► shared.config
+    ├──► shared.database
+    ├──► shared.models
+    ├──► shared.kafka_admin
+    └──► predictor            (CatBoost inference)
+
+sink_worker
+    ├──► shared.config
+    ├──► shared.kafka_admin
+    └──► mongo_client         (MongoDB high_risk + poison DLQ)
+```
+
+---
+
+## 🚀 Быстрый старт
+
+### 1. Клонировать репозиторий
+
+```bash
+git clone https://github.com/your-username/bank-churn-eda-system.git
+cd bank-churn-eda-system
+```
+
+### 2. Создать `.env`
+
+```env
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+KAFKA_TOPIC_RAW=churn-raw-events
+KAFKA_TOPIC_SCORED=scored-events
+
+DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/bank_churn
+MODEL_PATH=models/churn_model.cbm
+
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DB=bank_churn
+```
+
+### 3. Запустить инфраструктуру
+
+```bash
+docker-compose up -d
+```
+
+### 4. Запустить сервисы
+
+```bash
+# API Gateway
+uvicorn src.api_gateway.main:app --host 0.0.0.0 --port 8000 --reload
+
+# ML Worker
+python -m src.ml_worker.consumer
+
+# Sink Worker
+python -m src.sink_worker.consumer
+
+# Simulator (опционально)
+python -m src.simulator.main
+```
+
+---
+
+## 📡 API
+
+### `POST /events/`
+Принимает данные клиента банка, отправляет в Kafka.
+
+```json
+{
+  "user_id": "user_1234",
+  "credit_score": 650,
+  "geography": "France",
+  "gender": "Male",
+  "age": 35,
+  "tenure": 5,
+  "balance": 125000.00,
+  "num_of_products": 2,
+  "has_cr_card": true,
+  "is_active_member": true,
+  "estimated_salary": 75000.00,
+  "complain": false,
+  "satisfaction_score": 4,
+  "subscription_type": "GOLD",
+  "points_earned": 450,
+  "timestamp": "2024-01-15T10:30:00"
+}
+```
+
+**Ответ:**
+```json
+{
+  "status": "success",
+  "message": "Транзакция отправлена в Kafka",
+  "topic": "churn-raw-events"
+}
+```
+
+---
+
+### `GET /result/{user_id}`
+Возвращает последний результат предсказания для клиента.
+
+**Ответ:**
+```json
+{
+  "user_id": "user_1234",
+  "churn_probability": 0.7823,
+  "risk_level": "🔴 Высокий",
+  "timestamp": "2024-01-15T10:30:05"
+}
+```
+
+| `churn_probability` | `risk_level` |
+|---------------------|--------------|
+| ≥ 0.7 | 🔴 Высокий |
+| ≥ 0.4 | 🟡 Средний |
+| < 0.4 | 🟢 Низкий |
+
+---
+
+### `GET /`
+Healthcheck.
+
+```json
+{ "status": "ok", "message": "Bank Churn API is running!" }
+```
+
+---
+
+## ⚙️ Конфигурация
+
+| Переменная | Описание | Пример |
+|------------|----------|--------|
+| `KAFKA_BOOTSTRAP_SERVERS` | Адрес Kafka брокера | `localhost:9092` |
+| `KAFKA_TOPIC_RAW` | Топик сырых событий | `churn-raw-events` |
+| `KAFKA_TOPIC_SCORED` | Топик результатов | `scored-events` |
+| `DATABASE_URL` | PostgreSQL DSN | `postgresql+asyncpg://...` |
+| `MODEL_PATH` | Путь к модели CatBoost | `models/churn_model.cbm` |
+| `MONGODB_URI` | MongoDB DSN | `mongodb://localhost:27017` |
+| `MONGODB_DB` | Название БД MongoDB | `bank_churn` |
+
+---
+
+## 🔮 В разработке
+
+- [ ] `streamlit_app` — дашборд аналитики (PostgreSQL + MongoDB)
+- [ ] Метрики Prometheus + Grafana
+- [ ] Docker Compose для всех сервисов
+- [ ] Production-конфигурация Kafka (replication factor = 3)
