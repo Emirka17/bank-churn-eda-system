@@ -7,7 +7,7 @@ from src.shared.config import settings
 from src.shared.database import engine, Base, async_session
 from src.shared.models import ClientChurnLog
 from src.ml_worker.predictor import predictor
-
+from src.shared.kafka_admin import create_topics
 
 async def init_db():
     """Создает таблицы в базе данных, если их еще нет"""
@@ -24,6 +24,7 @@ async def consume():
     # ── НОВОЕ: загружаем модель ДО старта консьюмера ──────────────
     predictor.load()  # fail fast — если модели нет, падаем сразу
     # ──────────────────────────────────────────────────────────────
+    await create_topics()
 
     consumer = AIOKafkaConsumer(
         settings.KAFKA_TOPIC_RAW,

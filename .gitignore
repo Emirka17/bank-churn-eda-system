@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 venv/
 .env
+.env.local
+.env.production
 
 # Data and Models
 data/
@@ -23,3 +25,6 @@ data/
 models/*.cbm
 models/*.pkl
 models/*.bin
+
+
+/scripts

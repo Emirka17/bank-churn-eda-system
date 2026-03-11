@@ -2,10 +2,13 @@ import json
 import asyncio
 from aiokafka import AIOKafkaProducer
 from src.shared.config import settings
+from src.shared.kafka_admin import create_topics
 
 producer: AIOKafkaProducer = None
 
 async def start_producer(retries: int = 10, delay: float = 2.0):
+    await create_topics()
+    
     global producer
     producer = AIOKafkaProducer(
         bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,

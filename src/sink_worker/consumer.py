@@ -6,6 +6,7 @@ from aiokafka import AIOKafkaConsumer
 
 from src.shared.config import settings
 from src.sink_worker.mongo_client import mongo
+from src.shared.kafka_admin import create_topics
 
 # Порог высокого риска
 HIGH_RISK_THRESHOLD = 0.7
@@ -43,6 +44,8 @@ async def handle_poison(raw, error: str, topic: str, partition: int, offset: int
 
 
 async def consume():
+    
+    await mongo.connect()
     await mongo.connect()
 
     consumer = AIOKafkaConsumer(
